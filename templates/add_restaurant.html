@@ -81,20 +81,6 @@
                     <input type="text" name="price_range" required>
                 </div>
 
-                <div class="menu-input-section">
-                    <h3>Menu Restoran</h3>
-                    <p class="menu-note">Isi menu makanan yang tersedia beserta gambar untuk tampil di detail restoran.</p>
-
-                    {% for i in range(1,6) %}
-                    <div class="menu-item-group">
-                        <label>Menu {{ i }}</label>
-                        <input type="text" name="menu_name_{{ i }}" placeholder="Nama menu {{ i }}">
-                        <input type="text" name="menu_price_{{ i }}" placeholder="Harga menu {{ i }}">
-                        <input type="file" name="menu_image_{{ i }}" accept="image/*">
-                    </div>
-                    {% endfor %}
-                </div>
-
                 <div class="form-group">
                     <label>Upload Foto Restoran (opsional):</label>
                     <input type="file" name="image" accept="image/*">
