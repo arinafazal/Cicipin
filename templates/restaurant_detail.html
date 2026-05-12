@@ -58,7 +58,6 @@
                         <div class="rating-row" style="--rating-width: {{ rating_percentages[star] }}%;">
                             <span class="rating-star-row">{{ star }} <span class="star-icon">★</span></span>
                             <div class="rating-bar">
-                                <span class="rating-fill" style="width: {{ ((rating_counts[star] / total_reviews * 100) if total_reviews else 0) | round | int }}%;"></span>
                                 <span class="rating-fill"></span>
                             </div>
                             <span class="rating-count-value">{{ rating_counts[star] }}</span>
@@ -76,34 +75,7 @@
 
         <div class="detail-container">
             <div class="detail-section">
-                <h2><span class="category-icon">📋</span> Menu</h2>
-                {% if restaurant.menu %}
-                <div class="menu-grid">
-                    {% for item in restaurant.menu %}
-                    <div class="menu-card">
-                        {% if item.image_url %}
-                        <div class="menu-card-image">
-                            <img src="{{ item.image_url }}" alt="{{ item.name }}">
-                        </div>
-                        {% endif %}
-                        <div class="menu-card-body">
-                            <h3>{{ item.name }}</h3>
-                            {% if item.price %}
-                            <p class="menu-price">{{ item.price }}</p>
-                            {% endif %}
-                        </div>
-                    </div>
-                    {% endfor %}
-                </div>
-                {% else %}
-                <p>Menu belum tersedia untuk restoran ini.</p>
-                {% endif %}
-            </div>
-        </div>
-
-        <div class="detail-container">
-            <div class="detail-section">
-                <h2><span class="category-icon">💬</span> Ulasan</h2>
+                <h2><span class="category-icon"></span> Ulasan</h2>
                 {% if restaurant['reviews'] %}
                 {% for review in restaurant['reviews'] %}
                 <div class="review-item">

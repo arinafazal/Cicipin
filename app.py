@@ -14,9 +14,6 @@ from PIL import Image
 from datetime import datetime, time
 import math
 import re
-import smtplib
-from email.message import EmailMessage
-from itsdangerous import URLSafeTimedSerializer, BadSignature, SignatureExpired
 
 cloudinary.config(
     cloud_name=os.getenv("CLOUDINARY_CLOUD_NAME"),
@@ -32,95 +29,7 @@ UPLOAD_FOLDER = "/tmp"
 app.secret_key = os.environ.get('SECRET_KEY', 'dev-secret-key-cicipin-2024')
 
 
-def get_serializer():
-    return URLSafeTimedSerializer(app.secret_key)
 
-
-def generate_password_reset_token(email):
-    serializer = get_serializer()
-    return serializer.dumps(email, salt='password-reset-salt')
-
-
-def verify_password_reset_token(token, expiration=3600):
-    serializer = get_serializer()
-    return serializer.loads(token, salt='password-reset-salt', max_age=expiration)
-
-
-def send_password_reset_email(recipient_email, reset_url, recipient_name=None):
-    email_host = os.getenv('EMAIL_HOST')
-    email_port = int(os.getenv('EMAIL_PORT', 587))
-    email_user = os.getenv('EMAIL_USER')
-    email_pass = os.getenv('EMAIL_PASS')
-    email_use_tls = os.getenv('EMAIL_USE_TLS', 'true').lower() in ['true', '1', 'yes']
-
-    if not email_host or not email_user or not email_pass:
-        app.logger.warning('Email not configured, skipping actual email send for %s', recipient_email)
-        return False
-
-    subject = 'Reset Password Cicipin'
-    body = f"Halo {recipient_name or 'Pengguna'},\n\nKlik tautan di bawah ini untuk mereset password Anda:\n\n{reset_url}\n\nJika Anda tidak meminta reset password, abaikan email ini.\n\nSalam,\nTim Cicipin"
-
-    msg = EmailMessage()
-    msg['Subject'] = subject
-    msg['From'] = email_user
-    msg['To'] = recipient_email
-    msg.set_content(body)
-
-    try:
-        server = smtplib.SMTP(email_host, email_port)
-        if email_use_tls:
-            server.starttls()
-        server.login(email_user, email_pass)
-        server.send_message(msg)
-        server.quit()
-        return True
-    except Exception as e:
-        app.logger.error('Failed to send password reset email: %s', e)
-        return False
-
-
-def upload_menu_image(image_file):
-    if not image_file or not image_file.filename:
-        return None
-
-    try:
-        upload_result = cloudinary.uploader.upload(
-            image_file,
-            resource_type="image"
-        )
-        return upload_result.get("secure_url")
-    except Exception as e:
-        app.logger.error("Cloudinary menu image upload failed: %s", e)
-        return None
-
-
-def build_menu_items(form, files, existing_menu=None, max_items=5):
-    menu_items = []
-    existing_menu = existing_menu or []
-
-    for i in range(1, max_items + 1):
-        name = form.get(f"menu_name_{i}", "").strip()
-        price = form.get(f"menu_price_{i}", "").strip()
-        image_file = files.get(f"menu_image_{i}")
-        image_url = upload_menu_image(image_file)
-
-        existing_item = existing_menu[i - 1] if i <= len(existing_menu) else {}
-        if image_url is None and existing_item:
-            image_url = existing_item.get('image_url')
-
-        if not name and existing_item:
-            name = existing_item.get('name', '')
-        if not price and existing_item:
-            price = existing_item.get('price', '')
-
-        if name or price or image_url:
-            menu_items.append({
-                'name': name,
-                'price': price,
-                'image_url': image_url
-            })
-
-    return menu_items
 
 
 def process_image(path, size=(600,400)):
@@ -156,7 +65,7 @@ def login():
 
     if request.method == 'POST':
 
-        username_or_email = request.form['username']
+        username = request.form['username']
         password = request.form['password']
 
         if db is None:
@@ -164,10 +73,7 @@ def login():
             return render_template('login.html')
 
         user = db.users.find_one({
-            "$or": [
-                {"username": username_or_email},
-                {"email": username_or_email.lower()}
-            ]
+            "username": username
         })
 
         if user and check_password_hash(user['password'], password):
@@ -228,78 +134,7 @@ def register():
 
     return render_template('register.html')
 
-@app.route('/forgot_password', methods=['GET', 'POST'])
-def forgot_password():
 
-    if request.method == 'POST':
-        email = request.form.get('email', '').strip().lower()
-
-        if db is None:
-            flash('Cannot process request: database unreachable', 'danger')
-            return render_template('forgot_password.html')
-
-        if not email:
-            flash('Masukkan email yang terdaftar.', 'danger')
-            return render_template('forgot_password.html')
-
-        user = db.users.find_one({"email": email})
-
-        if not user:
-            flash('Jika email valid, tautan reset password akan dikirimkan.', 'info')
-            return redirect(url_for('login'))
-
-        token = generate_password_reset_token(email)
-        reset_link = url_for('reset_password', token=token, _external=True)
-        success = send_password_reset_email(email, reset_link, recipient_name=user.get('full_name') or user.get('username'))
-
-        if success:
-            flash('Tautan reset password telah dikirim ke email Anda.', 'success')
-        else:
-            flash('Gagal mengirim email reset. Silakan hubungi admin atau coba lagi nanti.', 'danger')
-
-        return redirect(url_for('login'))
-
-    return render_template('forgot_password.html')
-
-@app.route('/reset_password/<token>', methods=['GET', 'POST'])
-def reset_password(token):
-    try:
-        email = verify_password_reset_token(token)
-    except SignatureExpired:
-        flash('Tautan reset password telah kadaluarsa. Silakan minta ulang.', 'danger')
-        return redirect(url_for('forgot_password'))
-    except BadSignature:
-        flash('Tautan reset password tidak valid.', 'danger')
-        return redirect(url_for('forgot_password'))
-
-    if db is None:
-        flash('Cannot process request: database unreachable', 'danger')
-        return redirect(url_for('login'))
-
-    user = db.users.find_one({"email": email})
-    if not user:
-        flash('Pengguna tidak ditemukan.', 'danger')
-        return redirect(url_for('forgot_password'))
-
-    if request.method == 'POST':
-        password = request.form.get('password')
-        confirm_password = request.form.get('confirm_password')
-
-        if not password or not confirm_password:
-            flash('Masukkan password baru dan konfirmasi password.', 'danger')
-            return render_template('reset_password.html', token=token)
-
-        if password != confirm_password:
-            flash('Password dan konfirmasi tidak cocok.', 'danger')
-            return render_template('reset_password.html', token=token)
-
-        hashed_password = generate_password_hash(password)
-        db.users.update_one({"email": email}, {"$set": {"password": hashed_password}})
-
-        flash('Password berhasil diubah. Silakan masuk dengan password baru Anda.', 'success')
-        return redirect(url_for('login'))
-
-    return render_template('reset_password.html', token=token)
 
 
 def is_admin():
@@ -465,7 +300,14 @@ def index():
 
             city_agg = list(db.restaurants.aggregate([
                 {"$match": {"address": {"$exists": True, "$ne": ""}}},
-                {"$project": {"city": {"$trim": {"input": {"$arrayElemAt": [{"$split": ["$address", ","]}, -1]}}}}},
+                {"$project": {"address_parts": {"$split": ["$address", ","]}, "address_len": {"$size": {"$split": ["$address", ","]}}}},
+                {"$project": {"city": {
+                    "$cond": [
+                        {"$gte": ["$address_len", 2]},
+                        {"$trim": {"input": {"$arrayElemAt": [{"$split": ["$address", ","]}, -2]}}},
+                        {"$trim": {"input": {"$arrayElemAt": [{"$split": ["$address", ","]}, -1]}}}
+                    ]
+                }}},
                 {"$group": {"_id": "$city"}},
                 {"$count": "city_count"}
             ]))
@@ -529,8 +371,6 @@ def add_restaurant():
                 except Exception as e:
                     print("CLOUDINARY ERROR:", e)
 
-            menu_items = build_menu_items(request.form, request.files)
-
             new_restaurant = {
                 "name": name,
                 "category": category,
@@ -540,7 +380,6 @@ def add_restaurant():
                 "opening_hours": opening_hours,
                 "price_range": price_range,
                 "image_url": image_url,
-                "menu": menu_items,
                 "reviews": []
             }
 
@@ -578,8 +417,6 @@ def edit_restaurant(restaurant_id):
         latitude = float(request.form['latitude']) if request.form.get('latitude') else None
         longitude = float(request.form['longitude']) if request.form.get('longitude') else None
         price_range = request.form['price_range']
-        existing_menu = restaurant.get('menu', [])
-        menu_items = build_menu_items(request.form, request.files, existing_menu)
 
         update_fields = {
             "name": name,
@@ -588,8 +425,7 @@ def edit_restaurant(restaurant_id):
             "opening_hours": opening_hours,
             "latitude": latitude,
             "longitude": longitude,
-            "price_range": price_range,
-            "menu": menu_items
+            "price_range": price_range
         }
 
         image = request.files.get("image")
