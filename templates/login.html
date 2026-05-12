@@ -43,8 +43,8 @@
 
             <form action="{{ url_for('login') }}" method="POST">
                 <div class="form-group">
-                    <label for="username">Username atau Email</label>
-                    <input type="text" id="username" name="username" placeholder="kucing123 atau nama@email.com" required>
+                    <label for="username">Username</label>
+                    <input type="text" id="username" name="username" placeholder="kucing123" required>
                 </div>
 
                 <div class="form-group">
@@ -57,7 +57,6 @@
                 </div>
             </form>
 
-            <p class="auth-link"><a href="{{ url_for('forgot_password') }}">Lupa password?</a></p>
             <p class="auth-link">Belum punya akun? <a href="{{ url_for('register') }}">Daftar di sini</a></p>
         </div>
     </div>

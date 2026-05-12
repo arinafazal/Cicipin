@@ -82,21 +82,6 @@
                         <input type="text" name="price_range" value="{{ restaurant.get('price_range', '') }}" required>
                     </div>
 
-                    <div class="menu-input-section">
-                        <h3>Menu Restoran</h3>
-                        <p class="menu-note">Ubah menu yang tersedia. Gambar lama akan tetap disimpan jika tidak diunggah ulang.</p>
-
-                        {% for i in range(1,6) %}
-                        {% set menu_item = restaurant.menu[i-1] if restaurant.menu and restaurant.menu|length >= i else {} %}
-                        <div class="menu-item-group">
-                            <label>Menu {{ i }}</label>
-                            <input type="text" name="menu_name_{{ i }}" placeholder="Nama menu {{ i }}" value="{{ menu_item.get('name','') }}">
-                            <input type="text" name="menu_price_{{ i }}" placeholder="Harga menu {{ i }}" value="{{ menu_item.get('price','') }}">
-                            <input type="file" name="menu_image_{{ i }}" accept="image/*">
-                        </div>
-                        {% endfor %}
-                    </div>
-
                     <div class="form-group">
                         <label>Upload Foto Restoran (opsional):</label>
                         <input type="file" name="image" accept="image/*">

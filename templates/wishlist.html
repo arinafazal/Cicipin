@@ -45,7 +45,7 @@
             {% if restaurants %}
             <div class="restaurant-cards">
                 {% for restaurant in restaurants %}
-                <div class="restaurant-card" id="card-{{ restaurant['_id'] }}" data-opening-hours="{{ restaurant.get('opening_hours', '') }}">
+                <div class="restaurant-card" id="card-{{ restaurant['_id'] }}">
                     <div class="image-wrap">
                         <button type="button" class="wishlist-btn saved" data-id="{{ restaurant['_id'] }}">❤️</button>
                         {% if restaurant['image_url'] %}
