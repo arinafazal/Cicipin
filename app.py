@@ -208,57 +208,6 @@ def haversine(lat1, lon1, lat2, lon2):
     c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
     return R * c
 
-# --- FUNGSI BARU: Logika Kota Pintar ---
-def extract_real_city(address):
-    if not address:
-        return None
-        
-    # 1. Deteksi Keyword Pasti (Kota, Kab, Kabupaten, City)
-    match = re.search(r'(?i)\b(?:kota|kabupaten|kab\.?)\s+([a-zA-Z\s]+)', address)
-    if match:
-        return match.group(1).strip().title()
-        
-    match_en = re.search(r'(?i)\b([a-zA-Z\s]+)\s+city\b', address)
-    if match_en:
-        return match_en.group(1).strip().title()
-
-    # 2. Logika Tanpa Keyword (Pecah berdasarkan koma)
-    parts = [p.strip() for p in address.split(',')]
-    
-    # Bersihkan dari kode pos (hanya angka) atau bagian kosong
-    parts = [p for p in parts if p and not re.fullmatch(r'\d+', p)]
-    
-    if not parts:
-        return None
-        
-    # Daftar Hitam Provinsi (biar nggak keitung sebagai kota)
-    provinces = [
-        'jawa tengah', 'jateng', 'jawa timur', 'jatim', 'jawa barat', 'jabar', 
-        'dki jakarta', 'banten', 'diy', 'daerah istimewa yogyakarta', 'bali', 
-        'sumatera utara', 'sumatera barat', 'sumatera selatan', 'lampung', 
-        'riau', 'jambi', 'bengkulu', 'kalimantan barat', 'kalimantan timur', 
-        'kalimantan selatan', 'kalimantan tengah', 'sulawesi selatan', 
-        'sulawesi utara', 'sulawesi tengah', 'sulawesi tenggara', 'papua', 
-        'papua barat', 'maluku', 'ntb', 'ntt'
-    ]
-                 
-    # Kalau bagian paling belakang di alamat itu nama Provinsi, buang!
-    if parts[-1].lower() in provinces:
-        parts.pop()
-
-    # Sekarang bagian paling ujung pasti nama Kota/Kabupaten
-    if parts:
-        city_candidate = parts[-1]
-        
-        # Cegah kecolongan: Kalau ternyata cuma nulis "Kecamatan", di-skip
-        if re.search(r'(?i)\b(?:kecamatan|kec\.?)\b', city_candidate):
-            return None 
-            
-        return city_candidate.title()
-        
-    return None
-# ---------------------------------------
-
 def search_restaurants(search_term=None, min_rating=None, max_price=None, sort_by=None, user_lat=None, user_lon=None):
 
     if db is None:
@@ -348,14 +297,23 @@ def index():
             ]))
             total_reviews = reviews_agg[0]["total"] if reviews_agg else 0
 
-            # 3. Hitung Kota Unik dengan Logika Pintar
+            # 3. Hitung Kota Unik (Logika Pintar: Gabung Kota, Kab, City)
             all_restaurants = db.restaurants.find({}, {"address": 1})
             city_set = set()
             
             for res in all_restaurants:
-                city = extract_real_city(res.get("address", ""))
-                if city:
-                    city_set.add(city.lower())
+                address = res.get("address", "")
+                if address:
+                    # Cari nama kota/kabupaten menggunakan Regex
+                    match = re.search(r'(?i)\b(?:kota|kabupaten|kab\.?)\s+([a-z\s]+)|([a-z\s]+)\s+city', address)
+                    if match:
+                        raw_city = match.group(1) or match.group(2)
+                        city_set.add(raw_city.strip().lower())
+                    else:
+                        # Fallback: Ambil kata terakhir/sebelum koma terakhir
+                        parts = address.split(',')
+                        if parts:
+                            city_set.add(parts[-1].strip().lower())
             
             city_count = len(city_set)
 
