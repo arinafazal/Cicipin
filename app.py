@@ -14,6 +14,8 @@ from PIL import Image
 from datetime import datetime, time
 import math
 import re
+from timezonefinder import TimezoneFinder
+import pytz
 
 cloudinary.config(
     cloud_name=os.getenv("CLOUDINARY_CLOUD_NAME"),
@@ -166,17 +168,32 @@ def compute_open_status(restaurant):
         return restaurant
 
     try:
-        # Use regex to find time patterns like 8:00-22:00 or 08:00-22:00, also handle en dash
-        import re
+        # Get timezone based on restaurant coordinates
+        latitude = restaurant.get('latitude')
+        longitude = restaurant.get('longitude')
+        
+        timezone_str = "Asia/Jakarta"  # Default timezone for Indonesia
+        
+        if latitude and longitude:
+            try:
+                tf = TimezoneFinder()
+                timezone_str = tf.timezone_at(lat=float(latitude), lng=float(longitude))
+                if not timezone_str:
+                    timezone_str = "Asia/Jakarta"
+            except Exception:
+                timezone_str = "Asia/Jakarta"
+        
+        # Get current time in restaurant's timezone
+        tz = pytz.timezone(timezone_str)
+        now = datetime.now(tz).time()
+
+        # Parse opening hours
         match = re.search(r'(\d{1,2}):(\d{2})\s*[-–]\s*(\d{1,2}):(\d{2})', opening_hours)
         if not match:
-            print(f"NO MATCH for {opening_hours}")
             restaurant["is_open"] = None
             return restaurant
 
         open_hour, open_min, close_hour, close_min = map(int, match.groups())
-
-        now = datetime.now().time()
 
         open_time = time(open_hour, open_min)
         close_time = time(close_hour, close_min)
@@ -189,13 +206,44 @@ def compute_open_status(restaurant):
             # Normal case
             is_open = open_time <= now <= close_time
         
-        print(f"{opening_hours}: open={open_time}, close={close_time}, now={now}, is_open={is_open}")
         restaurant["is_open"] = is_open
 
-    except:
+    except Exception as e:
         restaurant["is_open"] = None
 
     return restaurant
+
+def extract_city_from_address(address):
+    """
+    Extract city/kabupaten name from address based on patterns:
+    - "Kab. [City]"
+    - "kabupaten [City]"
+    - "Kota [City]"
+    - "city [City]"
+    Returns the extracted city name or empty string if not found
+    """
+    if not address:
+        return ""
+    
+    # Pattern untuk Kab. atau Kabupaten
+    kab_pattern = r'(?:Kab\.|Kabupaten)\s+([^,]+)'
+    match = re.search(kab_pattern, address, re.IGNORECASE)
+    if match:
+        return match.group(1).strip()
+    
+    # Pattern untuk Kota
+    kota_pattern = r'Kota\s+([^,]+)'
+    match = re.search(kota_pattern, address, re.IGNORECASE)
+    if match:
+        return match.group(1).strip()
+    
+    # Pattern untuk city
+    city_pattern = r'city\s+([^,]+)'
+    match = re.search(city_pattern, address, re.IGNORECASE)
+    if match:
+        return match.group(1).strip()
+    
+    return ""
 
 # --- FITUR BARU: FUNGSI MENGHITUNG JARAK ---
 def haversine(lat1, lon1, lat2, lon2):
@@ -208,6 +256,9 @@ def haversine(lat1, lon1, lat2, lon2):
 
 # --- REVISI: DITAMBAHKAN PARAMETER FILTER ---
 def search_restaurants(search_term=None, min_rating=None, max_price=None, sort_by=None, user_lat=None, user_lon=None):
+
+    if db is None:
+        return []
 
     query = {}
 
@@ -298,20 +349,16 @@ def index():
             ]))
             total_reviews = reviews_agg[0]["total"] if reviews_agg else 0
 
-            city_agg = list(db.restaurants.aggregate([
-                {"$match": {"address": {"$exists": True, "$ne": ""}}},
-                {"$project": {"address_parts": {"$split": ["$address", ","]}, "address_len": {"$size": {"$split": ["$address", ","]}}}},
-                {"$project": {"city": {
-                    "$cond": [
-                        {"$gte": ["$address_len", 2]},
-                        {"$trim": {"input": {"$arrayElemAt": [{"$split": ["$address", ","]}, -2]}}},
-                        {"$trim": {"input": {"$arrayElemAt": [{"$split": ["$address", ","]}, -1]}}}
-                    ]
-                }}},
-                {"$group": {"_id": "$city"}},
-                {"$count": "city_count"}
-            ]))
-            city_count = city_agg[0]["city_count"] if city_agg else 0
+            # Extract cities from restaurant addresses
+            all_restaurants = list(db.restaurants.find({"address": {"$exists": True, "$ne": ""}}))
+            unique_cities = set()
+            
+            for restaurant in all_restaurants:
+                city = extract_city_from_address(restaurant.get("address", ""))
+                if city:  # Only count if city is found
+                    unique_cities.add(city)
+            
+            city_count = len(unique_cities)
         except Exception as exc:
             app.logger.warning("Failed to compute dashboard stats: %s", exc)
 
@@ -319,8 +366,12 @@ def index():
     if "user_id" in session:
         is_authenticated = True
         username = session.get("username")
-        user_wishlist = list(db.wishlists.find({"user_id": session["user_id"]}))
-        saved_restaurant_ids = [str(w["restaurant_id"]) for w in user_wishlist]
+        if db is not None:
+            try:
+                user_wishlist = list(db.wishlists.find({"user_id": session["user_id"]}))
+                saved_restaurant_ids = [str(w["restaurant_id"]) for w in user_wishlist]
+            except Exception as exc:
+                app.logger.warning("Failed to load wishlist: %s", exc)
 
     return render_template(
         'index.html',
