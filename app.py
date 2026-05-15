@@ -338,14 +338,34 @@ def get_dashboard_stats():
             ]))
             stats['total_reviews'] = reviews_agg[0]["total"] if reviews_agg else 0
             
-            city_agg = list(db.restaurants.aggregate([
-                {"$match": {"address": {"$exists": True, "$ne": ""}}},
-                {"$group": {"_id": "$address"}},
-                {"$count": "unique_addresses"}
+            # Count unique cities - fast aggregation pipeline (no API calls!)
+            # Extract "Kota XXX" pattern from address using MongoDB regex
+            cities_agg = list(db.restaurants.aggregate([
+                {
+                    "$group": {
+                        "_id": {
+                            "$cond": [
+                                {"$regexMatch": {"input": "$address", "regex": "Kota\\s+([A-Za-z]+)"}},
+                                {
+                                    "$regexFind": {
+                                        "input": "$address",
+                                        "regex": "Kota\\s+([A-Za-z]+)"
+                                    }
+                                },
+                                None
+                            ]
+                        }
+                    }
+                },
+                {"$match": {"_id": {"$ne": None}}},
+                {"$count": "unique_cities"}
             ]))
-            stats['city_count'] = city_agg[0]["unique_addresses"] if city_agg else 0
+            stats['city_count'] = cities_agg[0]["unique_cities"] if cities_agg else 1
+            
         except Exception as exc:
             app.logger.warning("Failed to compute dashboard stats: %s", exc)
+            # Fallback: at least show restaurant count
+            stats['city_count'] = 1
     
     # Update cache
     _dashboard_stats_cache["data"] = stats
