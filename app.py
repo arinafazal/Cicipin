@@ -16,6 +16,7 @@ import math
 import re
 from timezonefinder import TimezoneFinder
 import pytz
+import time as time_module
 
 cloudinary.config(
     cloud_name=os.getenv("CLOUDINARY_CLOUD_NAME"),
@@ -27,6 +28,10 @@ cloudinary.config(
 app = Flask(__name__, static_folder="static", static_url_path="/static")
 
 UPLOAD_FOLDER = "/tmp"
+
+# Simple cache for dashboard stats (expires every 60 seconds)
+_dashboard_stats_cache = {"data": None, "timestamp": 0}
+CACHE_DURATION = 60  # seconds
 
 app.secret_key = os.environ.get('SECRET_KEY', 'dev-secret-key-cicipin-2024')
 
@@ -47,29 +52,25 @@ def process_image(path, size=(600,400)):
 
 try:
     # Optimize for Vercel serverless environment
-    mongodb_uri = os.environ.get("MONGODB_URI")
-    
-    # Add connection pool and timeout parameters to URI if not present
-    if mongodb_uri and "?" not in mongodb_uri:
-        mongodb_uri += "?retryWrites=true&w=majority"
-    
     client = MongoClient(
-        mongodb_uri,
+        os.environ.get("MONGODB_URI"),
         serverSelectionTimeoutMS=5000,
         connectTimeoutMS=5000,
         socketTimeoutMS=10000,
-        maxPoolSize=10,
-        minPoolSize=2
+        retryWrites=True,
+        w="majority"
     )
     db = client[os.environ.get("DB_NAME")]
-    
-    # Test connection with timeout
-    try:
-        client.admin.command('ping')
-    except Exception as e:
-        app.logger.warning("Initial ping failed: %s", e)
-    
+    client.admin.command('ping')
     restaurants_collection = db["restaurants"]
+    
+    # Create indexes for faster queries (non-blocking)
+    try:
+        db.users.create_index([("username", 1)], unique=True)
+        db.restaurants.create_index([("name", 1)])
+        db.restaurants.create_index([("category", 1)])
+    except Exception as exc:
+        app.logger.warning("Failed to create indexes: %s", exc)
 
 except Exception as exc:
     import logging
@@ -78,35 +79,13 @@ except Exception as exc:
     db = None
     restaurants_collection = None
 
-# Debug endpoint to check database connection and environment
-@app.route('/debug', methods=['GET'])
-def debug():
-    """Debug endpoint - check database and environment status"""
-    debug_info = {
-        'mongodb_uri_set': bool(os.environ.get("MONGODB_URI")),
-        'db_name_set': bool(os.environ.get("DB_NAME")),
-        'db_is_none': db is None,
-    }
-    
-    if db is not None:
-        try:
-            # Try to connect and ping
-            ping_result = client.admin.command('ping')
-            debug_info['database_status'] = 'connected'
-            debug_info['ping_result'] = str(ping_result)
-            
-            # Try to count users
-            users_count = db.users.count_documents({})
-            debug_info['users_count'] = users_count
-            
-        except Exception as e:
-            debug_info['database_status'] = 'error'
-            debug_info['error'] = str(e)
-            debug_info['error_type'] = type(e).__name__
-    else:
-        debug_info['database_status'] = 'disconnected'
-    
-    return debug_info
+# Health check endpoint to warm up the serverless function
+@app.route('/health', methods=['GET'])
+def health():
+    """Health check endpoint - returns 200 if app is ready"""
+    if db is None:
+        return {'status': 'unhealthy', 'database': 'disconnected'}, 503
+    return {'status': 'healthy', 'database': 'connected'}, 200
 
 @app.route('/login', methods=['GET', 'POST'])
 def login():
@@ -120,16 +99,9 @@ def login():
             flash('Cannot log in: database unreachable', 'danger')
             return render_template('login.html')
 
-        try:
-            # Add timeout to prevent hanging on database query
-            user = db.users.find_one(
-                {"username": username},
-                _max_staleness_seconds=1  # Use fresh data
-            )
-        except Exception as e:
-            app.logger.error("Database query failed during login: %s", e)
-            flash('Database error. Please try again.', 'danger')
-            return render_template('login.html')
+        user = db.users.find_one({
+            "username": username
+        })
 
         if user and check_password_hash(user['password'], password):
             session['user_id'] = str(user['_id'])
@@ -192,23 +164,6 @@ def register():
 def is_admin():
     return session.get("username") == "admin"
 
-def compute_average_rating(restaurant):
-
-    reviews = restaurant.get('reviews', [])
-
-    if reviews:
-        try:
-            avg = sum(r.get('rating', 0) for r in reviews) / len(reviews)
-        except Exception:
-            avg = 0
-
-        restaurant['average_rating'] = round(avg, 1)
-
-    else:
-        restaurant['average_rating'] = None
-
-    return restaurant
-
 def compute_open_status(restaurant):
 
     opening_hours = restaurant.get("opening_hours")
@@ -265,73 +220,16 @@ def haversine(lat1, lon1, lat2, lon2):
     c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
     return R * c
 
-# --- FUNGSI BARU: Logika Kota Pintar yang Jauh Lebih Ketat ---
-def extract_real_city(address):
-    if not address:
-        return None
-        
-    address = address.strip()
-
-    # 1. Deteksi Keyword Pasti (Kota, Kab, Kabupaten, City)
-    match = re.search(r'(?i)\b(?:kota|kabupaten|kab\.?)\s+([a-zA-Z\s]+)', address)
-    if match:
-        result = match.group(1).strip()
-        # Ambil sebelum koma jika ada (contoh: "Kota Semarang, Jawa Tengah")
-        return result.split(',')[0].strip().title()
-        
-    match_en = re.search(r'(?i)\b([a-zA-Z\s]+)\s+city\b', address)
-    if match_en:
-        return match_en.group(1).strip().title()
-
-    # 2. Logika Tanpa Keyword (Pecah berdasarkan koma)
-    parts = [p.strip() for p in address.split(',')]
-    
-    # Bersihkan dari kode pos (hanya angka) atau bagian kosong
-    parts = [p for p in parts if p and not re.fullmatch(r'\d+', p)]
-    
-    if not parts:
-        return None
-        
-    # Daftar Hitam Provinsi (biar nggak keitung sebagai kota)
-    provinces = [
-        'indonesia', 'jawa tengah', 'jateng', 'jawa timur', 'jatim', 'jawa barat', 'jabar', 
-        'dki jakarta', 'banten', 'diy', 'daerah istimewa yogyakarta', 'yogyakarta', 'bali', 
-        'sumatera utara', 'sumatera barat', 'sumatera selatan', 'lampung', 
-        'riau', 'jambi', 'bengkulu', 'kalimantan barat', 'kalimantan timur', 
-        'kalimantan selatan', 'kalimantan tengah', 'sulawesi selatan', 
-        'sulawesi utara', 'sulawesi tengah', 'sulawesi tenggara', 'papua', 
-        'papua barat', 'maluku', 'ntb', 'ntt', 'central java', 'west java', 'east java'
-    ]
-                 
-    # Kalau bagian paling belakang di alamat itu masuk blacklist, buang!
-    while parts and parts[-1].lower() in provinces:
-        parts.pop()
-
-    # Sekarang bagian paling ujung pasti nama Kota/Kabupaten
-    if parts:
-        city_candidate = parts[-1]
-        
-        # Cegah kecolongan: Kalau ternyata cuma nulis "Kecamatan", mundur 1 langkah
-        if re.search(r'(?i)\b(?:kecamatan|kec\.?)\b', city_candidate):
-            if len(parts) > 1:
-                return parts[-2].title()
-            return None 
-            
-        return city_candidate.title()
-        
-    return None
-# ---------------------------------------
-
-def search_restaurants(search_term=None, min_rating=None, max_price=None, sort_by=None, user_lat=None, user_lon=None):
+def search_restaurants(search_term=None, min_rating=None, max_price=None, sort_by=None, user_lat=None, user_lon=None, limit=50):
 
     if db is None:
         return []
 
-    query = {}
-
+    # Build query for filtering
+    match_query = {}
     if search_term and search_term.lower() != "semua":
         regex = re.compile(re.escape(search_term), re.IGNORECASE)
-        query = {
+        match_query = {
             "$or": [
                 {"name": regex},
                 {"category": regex},
@@ -339,17 +237,44 @@ def search_restaurants(search_term=None, min_rating=None, max_price=None, sort_b
             ]
         }
 
-    restaurants = db.restaurants.find(query)
+    # Use aggregation pipeline to efficiently compute stats without loading full reviews
+    pipeline = [
+        {"$match": match_query},
+        {
+            "$project": {
+                "_id": 1,
+                "name": 1,
+                "category": 1,
+                "address": 1,
+                "latitude": 1,
+                "longitude": 1,
+                "opening_hours": 1,
+                "price_range": 1,
+                "image_url": 1,
+                # Count reviews without loading all of them
+                "review_count": {"$size": {"$ifNull": ["$reviews", []]}},
+                # Calculate average rating
+                "average_rating": {
+                    "$cond": [
+                        {"$gt": [{"$size": {"$ifNull": ["$reviews", []]}}, 0]},
+                        {"$avg": "$reviews.rating"},
+                        None
+                    ]
+                }
+            }
+        },
+        {"$limit": limit}
+    ]
 
+    restaurants = list(db.restaurants.aggregate(pipeline))
+
+    # Post-process for timezone and distance calculation
     result = []
-
     for restaurant in restaurants:
-
-        compute_average_rating(restaurant)
+        # Compute open status (needs timezone calculation)
         compute_open_status(restaurant)
 
-        restaurant['review_count'] = len(restaurant.get('reviews', []))
-
+        # Calculate distance if user location provided
         if user_lat and user_lon and restaurant.get('latitude') and restaurant.get('longitude'):
             restaurant['distance'] = haversine(float(user_lat), float(user_lon), float(restaurant['latitude']), float(restaurant['longitude']))
             restaurant['distance_str'] = f"{restaurant['distance']:.1f} km"
@@ -357,12 +282,14 @@ def search_restaurants(search_term=None, min_rating=None, max_price=None, sort_b
             restaurant['distance'] = float('inf')
             restaurant['distance_str'] = ""
 
+        # Apply rating filter
         if min_rating is not None:
             if restaurant['average_rating'] is None or restaurant['average_rating'] < min_rating:
                 continue
 
         result.append(restaurant)
 
+    # Sort results
     if sort_by == 'rating':
         result.sort(key=lambda x: x.get('average_rating') or 0, reverse=True)
     elif sort_by == 'terlaris':
@@ -370,7 +297,50 @@ def search_restaurants(search_term=None, min_rating=None, max_price=None, sort_b
     elif sort_by == 'jarak' and user_lat and user_lon:
         result.sort(key=lambda x: x.get('distance'))
 
-    return result
+    return result[:limit]
+
+
+def get_dashboard_stats():
+    """Get cached dashboard stats or compute if cache expired"""
+    global _dashboard_stats_cache
+    
+    current_time = time_module.time()
+    
+    # Return cached data if still fresh
+    if _dashboard_stats_cache["data"] and (current_time - _dashboard_stats_cache["timestamp"]) < CACHE_DURATION:
+        return _dashboard_stats_cache["data"]
+    
+    # Compute fresh stats
+    stats = {
+        'restaurant_count': 0,
+        'total_reviews': 0,
+        'city_count': 0
+    }
+    
+    if db is not None:
+        try:
+            stats['restaurant_count'] = db.restaurants.count_documents({})
+            
+            reviews_agg = list(db.restaurants.aggregate([
+                {"$project": {"count": {"$size": {"$ifNull": ["$reviews", []]}}}},
+                {"$group": {"_id": None, "total": {"$sum": "$count"}}}
+            ]))
+            stats['total_reviews'] = reviews_agg[0]["total"] if reviews_agg else 0
+            
+            city_agg = list(db.restaurants.aggregate([
+                {"$match": {"address": {"$exists": True, "$ne": ""}}},
+                {"$group": {"_id": "$address"}},
+                {"$count": "unique_addresses"}
+            ]))
+            stats['city_count'] = city_agg[0]["unique_addresses"] if city_agg else 0
+        except Exception as exc:
+            app.logger.warning("Failed to compute dashboard stats: %s", exc)
+    
+    # Update cache
+    _dashboard_stats_cache["data"] = stats
+    _dashboard_stats_cache["timestamp"] = current_time
+    
+    return stats
 
 
 @app.route('/')
@@ -395,53 +365,8 @@ def index():
     username = None
     is_authenticated = False
 
-    restaurant_count = 0
-    total_reviews = 0
-    city_count = 0
-
-    if db is not None:
-        try:
-            # 1. Total Restoran
-            restaurant_count = db.restaurants.count_documents({})
-
-            # 2. Total Ulasan (Data Asli dari array reviews)
-            reviews_agg = list(db.restaurants.aggregate([
-                {"$project": {"count": {"$size": {"$ifNull": ["$reviews", []]}}}},
-                {"$group": {"_id": None, "total": {"$sum": "$count"}}}
-            ]))
-            total_reviews = reviews_agg[0]["total"] if reviews_agg else 0
-
-            # 3. Hitung Kota Unik & Investigasi Alamat
-            all_restaurants = db.restaurants.find({}, {"address": 1, "name": 1})
-            city_set = set()
-            
-            print("\n" + "="*50)
-            print("🕵️ INVESTIGASI DETEKSI KOTA RESTORAN")
-            print("="*50)
-            
-            for res in all_restaurants:
-                raw_address = res.get("address", "")
-                nama_resto = res.get("name", "Tanpa Nama")
-                
-                city = extract_real_city(raw_address)
-                
-                print(f"Resto : {nama_resto}")
-                print(f"Alamat: {raw_address}")
-                print(f"-> Dideteksi: {city}\n")
-                
-                if city:
-                    city_set.add(city.lower())
-            
-            city_count = len(city_set)
-            
-            print("-" * 50)
-            print(f"Total Kota Unik Akhir: {city_count}")
-            print(f"Daftar Kota: {city_set}")
-            print("="*50 + "\n")
-
-        except Exception as exc:
-            app.logger.warning("Failed to compute dashboard stats: %s", exc)
-
+    # Use cached dashboard stats
+    dashboard_stats = get_dashboard_stats()
 
     if "user_id" in session:
         is_authenticated = True
@@ -461,11 +386,7 @@ def index():
         sort_by=sort_by,
         is_authenticated=is_authenticated,
         is_admin=is_admin(),
-        dashboard_stats={
-            'restaurant_count': restaurant_count,
-            'total_reviews': total_reviews,
-            'city_count': city_count
-        }
+        dashboard_stats=dashboard_stats
     )
 
 
@@ -662,7 +583,17 @@ def restaurant_detail(restaurant_id):
 
     if restaurant:
 
-        compute_average_rating(restaurant)
+        # Calculate average rating inline
+        reviews = restaurant.get('reviews', [])
+        if reviews:
+            try:
+                avg = sum(r.get('rating', 0) for r in reviews) / len(reviews)
+                restaurant['average_rating'] = round(avg, 1)
+            except Exception:
+                restaurant['average_rating'] = None
+        else:
+            restaurant['average_rating'] = None
+        
         compute_open_status(restaurant)
 
         rating_counts = {stars: 0 for stars in range(1, 6)}
@@ -735,7 +666,17 @@ def wishlist():
     restaurants = list(db.restaurants.find({"_id": {"$in": restaurant_ids}}))
 
     for r in restaurants:
-        compute_average_rating(r)
+        # Calculate average rating inline
+        reviews = r.get('reviews', [])
+        if reviews:
+            try:
+                avg = sum(rev.get('rating', 0) for rev in reviews) / len(reviews)
+                r['average_rating'] = round(avg, 1)
+            except Exception:
+                r['average_rating'] = None
+        else:
+            r['average_rating'] = None
+        
         compute_open_status(r)
 
     saved_restaurant_ids = [str(i) for i in restaurant_ids]
