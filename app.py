@@ -46,9 +46,29 @@ def process_image(path, size=(600,400)):
         app.logger.warning("failed to process image %s: %s", path, e)
 
 try:
-    client = MongoClient(os.environ.get("MONGODB_URI"), serverSelectionTimeoutMS=5000)
+    # Optimize for Vercel serverless environment with aggressive timeouts
+    mongodb_uri = os.environ.get("MONGODB_URI")
+    
+    # Add connection pool and timeout parameters to URI if not present
+    if mongodb_uri and "?" not in mongodb_uri:
+        mongodb_uri += "?retryWrites=true&w=majority&serverSelectionTimeoutMS=3000&socketTimeoutMS=5000"
+    
+    client = MongoClient(
+        mongodb_uri,
+        serverSelectionTimeoutMS=3000,
+        connectTimeoutMS=3000,
+        socketTimeoutMS=5000,
+        maxPoolSize=10,
+        minPoolSize=2
+    )
     db = client[os.environ.get("DB_NAME")]
-    client.admin.command('ping')
+    
+    # Test connection with timeout
+    try:
+        client.admin.command('ping', socketTimeoutMS=3000)
+    except Exception as e:
+        app.logger.warning("Initial ping failed: %s", e)
+    
     restaurants_collection = db["restaurants"]
 
 except Exception as exc:
@@ -70,9 +90,16 @@ def login():
             flash('Cannot log in: database unreachable', 'danger')
             return render_template('login.html')
 
-        user = db.users.find_one({
-            "username": username
-        })
+        try:
+            # Add timeout to prevent hanging on database query
+            user = db.users.find_one(
+                {"username": username},
+                _max_staleness_seconds=1  # Use fresh data
+            )
+        except Exception as e:
+            app.logger.error("Database query failed during login: %s", e)
+            flash('Database error. Please try again.', 'danger')
+            return render_template('login.html')
 
         if user and check_password_hash(user['password'], password):
             session['user_id'] = str(user['_id'])

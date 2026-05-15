@@ -41,7 +41,7 @@
             <h1>Masuk</h1>
             <p class="auth-tagline">Masuk untuk mulai review restoran favoritmu.</p>
 
-            <form action="{{ url_for('login') }}" method="POST">
+            <form action="{{ url_for('login') }}" method="POST" id="loginForm">
                 <div class="form-group">
                     <label for="username">Username</label>
                     <input type="text" id="username" name="username" placeholder="kucing123" required>
@@ -53,7 +53,10 @@
                 </div>
 
                 <div>
-                    <button type="submit" class="auth-submit-btn">Masuk</button>
+                    <button type="submit" class="auth-submit-btn" id="submitBtn">Masuk</button>
+                    <div id="loadingIndicator" style="display:none; text-align:center; margin-top:10px;">
+                        <p>Memproses login... (jika lebih dari 10 detik, coba refresh halaman)</p>
+                    </div>
                 </div>
             </form>
 
@@ -62,6 +65,35 @@
     </div>
 
     <script src="{{ url_for('static', filename='script.js') }}"></script>
+    <script>
+        // Warm up the serverless function before login
+        document.addEventListener('DOMContentLoaded', function() {
+            fetch('/health').catch(() => {}); // Non-blocking warm-up
+        });
+
+        // Add form submission handler with timeout
+        const loginForm = document.getElementById('loginForm');
+        const submitBtn = document.getElementById('submitBtn');
+        const loadingIndicator = document.getElementById('loadingIndicator');
+
+        if (loginForm) {
+            loginForm.addEventListener('submit', function(e) {
+                // Disable button and show loading
+                submitBtn.disabled = true;
+                loadingIndicator.style.display = 'block';
+
+                // Set timeout: if form doesn't submit within 10 seconds, show error
+                const timeout = setTimeout(() => {
+                    alert('Login memakan waktu terlalu lama. Cek koneksi internet atau coba lagi.');
+                    submitBtn.disabled = false;
+                    loadingIndicator.style.display = 'none';
+                }, 10000);
+
+                // Clear timeout if form actually submits
+                window.addEventListener('beforeunload', () => clearTimeout(timeout));
+            });
+        }
+    </script>
 </body>
 
 </html>
