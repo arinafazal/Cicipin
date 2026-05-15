@@ -18,6 +18,10 @@ from timezonefinder import TimezoneFinder
 import pytz
 import time as time_module
 
+# Cache TimezoneFinder globally to avoid expensive re-initialization
+_tf = TimezoneFinder()
+_timezone_cache = {}
+
 cloudinary.config(
     cloud_name=os.getenv("CLOUDINARY_CLOUD_NAME"),
     api_key=os.getenv("CLOUDINARY_API_KEY"),
@@ -165,6 +169,7 @@ def is_admin():
     return session.get("username") == "admin"
 
 def compute_open_status(restaurant):
+    global _tf, _timezone_cache
 
     opening_hours = restaurant.get("opening_hours")
 
@@ -180,10 +185,16 @@ def compute_open_status(restaurant):
         
         if latitude and longitude:
             try:
-                tf = TimezoneFinder()
-                timezone_str = tf.timezone_at(lat=float(latitude), lng=float(longitude))
-                if not timezone_str:
-                    timezone_str = "Asia/Jakarta"
+                # Check cache first to avoid expensive lookup
+                cache_key = f"{float(latitude):.2f},{float(longitude):.2f}"
+                if cache_key in _timezone_cache:
+                    timezone_str = _timezone_cache[cache_key]
+                else:
+                    # Use cached TimezoneFinder instance
+                    timezone_str = _tf.timezone_at(lat=float(latitude), lng=float(longitude))
+                    if not timezone_str:
+                        timezone_str = "Asia/Jakarta"
+                    _timezone_cache[cache_key] = timezone_str
             except Exception:
                 timezone_str = "Asia/Jakarta"
         
@@ -220,7 +231,7 @@ def haversine(lat1, lon1, lat2, lon2):
     c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
     return R * c
 
-def search_restaurants(search_term=None, min_rating=None, max_price=None, sort_by=None, user_lat=None, user_lon=None, limit=50):
+def search_restaurants(search_term=None, min_rating=None, max_price=None, sort_by=None, user_lat=None, user_lon=None, limit=20):
 
     if db is None:
         return []
