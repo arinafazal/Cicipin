@@ -22,6 +22,9 @@ import time as time_module
 _tf = TimezoneFinder()
 _timezone_cache = {}
 
+# Hardcoded list of known cities in database
+KNOWN_CITIES = ['Semarang', 'Yogyakarta', 'Sleman', 'Bantul', 'Demak']
+
 cloudinary.config(
     cloud_name=os.getenv("CLOUDINARY_CLOUD_NAME"),
     api_key=os.getenv("CLOUDINARY_API_KEY"),
@@ -338,29 +341,20 @@ def get_dashboard_stats():
             ]))
             stats['total_reviews'] = reviews_agg[0]["total"] if reviews_agg else 0
             
-            # Count unique cities - fast aggregation pipeline (no API calls!)
-            # Extract "Kota XXX" pattern from address using MongoDB regex
-            cities_agg = list(db.restaurants.aggregate([
-                {
-                    "$group": {
-                        "_id": {
-                            "$cond": [
-                                {"$regexMatch": {"input": "$address", "regex": "Kota\\s+([A-Za-z]+)"}},
-                                {
-                                    "$regexFind": {
-                                        "input": "$address",
-                                        "regex": "Kota\\s+([A-Za-z]+)"
-                                    }
-                                },
-                                None
-                            ]
-                        }
-                    }
-                },
-                {"$match": {"_id": {"$ne": None}}},
-                {"$count": "unique_cities"}
-            ]))
-            stats['city_count'] = cities_agg[0]["unique_cities"] if cities_agg else 1
+            # Count unique cities - check which KNOWN_CITIES appear in addresses
+            restaurants = db.restaurants.find({}, {"address": 1})
+            cities_found = set()
+            
+            for restaurant in restaurants:
+                address = restaurant.get('address', '')
+                if address:
+                    # Check if any known city is mentioned in the address
+                    for city in KNOWN_CITIES:
+                        if city in address:
+                            cities_found.add(city)
+                            break  # Found a city, no need to check others for this restaurant
+            
+            stats['city_count'] = len(cities_found)
             
         except Exception as exc:
             app.logger.warning("Failed to compute dashboard stats: %s", exc)
