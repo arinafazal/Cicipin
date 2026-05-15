@@ -46,18 +46,18 @@ def process_image(path, size=(600,400)):
         app.logger.warning("failed to process image %s: %s", path, e)
 
 try:
-    # Optimize for Vercel serverless environment with aggressive timeouts
+    # Optimize for Vercel serverless environment
     mongodb_uri = os.environ.get("MONGODB_URI")
     
     # Add connection pool and timeout parameters to URI if not present
     if mongodb_uri and "?" not in mongodb_uri:
-        mongodb_uri += "?retryWrites=true&w=majority&serverSelectionTimeoutMS=3000&socketTimeoutMS=5000"
+        mongodb_uri += "?retryWrites=true&w=majority"
     
     client = MongoClient(
         mongodb_uri,
-        serverSelectionTimeoutMS=3000,
-        connectTimeoutMS=3000,
-        socketTimeoutMS=5000,
+        serverSelectionTimeoutMS=5000,
+        connectTimeoutMS=5000,
+        socketTimeoutMS=10000,
         maxPoolSize=10,
         minPoolSize=2
     )
@@ -65,7 +65,7 @@ try:
     
     # Test connection with timeout
     try:
-        client.admin.command('ping', socketTimeoutMS=3000)
+        client.admin.command('ping')
     except Exception as e:
         app.logger.warning("Initial ping failed: %s", e)
     
