@@ -78,6 +78,36 @@ except Exception as exc:
     db = None
     restaurants_collection = None
 
+# Debug endpoint to check database connection and environment
+@app.route('/debug', methods=['GET'])
+def debug():
+    """Debug endpoint - check database and environment status"""
+    debug_info = {
+        'mongodb_uri_set': bool(os.environ.get("MONGODB_URI")),
+        'db_name_set': bool(os.environ.get("DB_NAME")),
+        'db_is_none': db is None,
+    }
+    
+    if db is not None:
+        try:
+            # Try to connect and ping
+            ping_result = client.admin.command('ping')
+            debug_info['database_status'] = 'connected'
+            debug_info['ping_result'] = str(ping_result)
+            
+            # Try to count users
+            users_count = db.users.count_documents({})
+            debug_info['users_count'] = users_count
+            
+        except Exception as e:
+            debug_info['database_status'] = 'error'
+            debug_info['error'] = str(e)
+            debug_info['error_type'] = type(e).__name__
+    else:
+        debug_info['database_status'] = 'disconnected'
+    
+    return debug_info
+
 @app.route('/login', methods=['GET', 'POST'])
 def login():
 
